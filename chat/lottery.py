@@ -46,7 +46,7 @@ def get_active_eligible_users(guild: discord.Guild, guild_id: int) -> list[disco
     
     return eligible
 
-async def lottery_task(bot: discord.Bot):
+async def lottery_task(bot):
     await bot.wait_until_ready()
     
     try:

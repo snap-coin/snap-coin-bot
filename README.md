@@ -7,7 +7,7 @@
 
 ## Install
 
-```pip install requirements.txt```
+```pip install -r requirements.txt```
 
 ```make run```
 
