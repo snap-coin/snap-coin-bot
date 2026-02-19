@@ -82,7 +82,7 @@ async def request_payout(interval = int(os.getenv("PAYOUT_INTERVAL_SECONDS", "86
         await asyncio.sleep(interval)
 
         
-def generate_base36(length=49):
+def generate_base36(length=30):
     chars = string.digits + string.ascii_lowercase
     return ''.join(secrets.choice(chars) for _ in range(length))
 
