@@ -5,8 +5,8 @@ import os
 import string
 from dotenv import load_dotenv
 import logging
-
-import requests
+import aiohttp
+import discord
 
 load_dotenv("assets.env")
 load_dotenv(".env")
@@ -34,25 +34,29 @@ async def get_pending_withdrawals():
         conn.close()
         return pending
 
-    except sqlite3.Error as e:
-        logger.error("Database error: %s", e)
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):
+            return []
+        raise
+    finally:
         if conn:
             conn.close()
-        return []
     
 
-async def request_payout(interval = int(os.getenv("PAYOUT_INTERVAL_SECONDS", "86400"))):  # default to 24 hours
+async def request_payout(bot, interval=int(os.getenv("PAYOUT_INTERVAL_SECONDS", "86400"))):
     while True:
         pending = await get_pending_withdrawals()
         if pending:
+            user_ids = [user_id for user_id, reward_name, reward_amount, wallet_address in pending]
             receivers = [
                 [wallet_address, round(reward_amount, 4)]
                 for user_id, reward_name, reward_amount, wallet_address in pending
             ]
-            
+
             reference = generate_base36()
-            
+
             secret_key = os.getenv("SECRET_KEY")
+            link = os.getenv("FAUCET_LINK")
 
             data = {
                 "secret_key": secret_key,
@@ -61,41 +65,75 @@ async def request_payout(interval = int(os.getenv("PAYOUT_INTERVAL_SECONDS", "86
             }
             
             try:
-                link = os.getenv("FAUCET_LINK")
-            
-                headers = {
-                    'Content-Type': 'application/json'
-                }
-                
-                req = requests.post(link, json=data, headers=headers, timeout=10)
-                
-                logger.info("Requested payout for %d users with total amount %.4f", len(receivers), sum(r[1] for r in receivers))
-                
-                logger.info("Payout request response: %d - %s", req.status_code, req.text)
-            
-                # TODO: If successful, schedule a task to check status in a 5 minutes then mark the rewards as paid in the database + post on discord channel
-            except requests.exceptions.RequestException as e:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(link, json=data, headers={'Content-Type': 'application/json'}, timeout=aiohttp.ClientTimeout(total=10)) as req:
+                        response_text = await req.text()
+
+                        logger.info("Requested payout for %d users with total amount %.4f", len(receivers), sum(r[1] for r in receivers))
+                        logger.info("Payout request response: %d - %s", req.status, response_text)
+
+                        if req.status == 200:
+                            await reset_balance(user_ids)
+                            
+                            # wait for 10 mins, fetch the transaction hash and post the transaction url in 
+                            # the general chat informing winners that payments have been made
+                            
+                            asyncio.sleep(10 * 60) # sleep for 10 mins
+                            guild_id = int(os.getenv("GUILD_ID"))
+                            guild = bot.get_guild(guild_id)
+    
+                            payout_proof = get_payout_proof(reference)
+                            if guild:
+                                post_channel = discord.utils.get(guild.text_channels, name="general")
+                                
+                                if post_channel and payout_proof:
+                                    user_mentions = " ".join(f"<@{user_id}>" for user_id in user_ids)
+                                    
+                                    message = f"{user_mentions}\nYour payout for the day has been made based on how many time your messages were selected as winning messages by the bot! Transaction: {payout_proof}"
+                                    await post_channel.send(message)
+                            else:
+                                logger.error("Guild not found or bot isn't ready yet.")
+                            
+
+            except Exception as e: #pylint: disable=broad-except
                 logger.error("Payout request failed: %s", e)
         else:
             logger.info("No pending withdrawals found")
-        
-        await asyncio.sleep(interval)
 
+        await asyncio.sleep(interval)
         
 def generate_base36(length=30):
     chars = string.digits + string.ascii_lowercase
     return ''.join(secrets.choice(chars) for _ in range(length))
 
-
-def get_withdrawal_status(reference):
+async def get_payout_proof(reference):
     url = f"{os.getenv('FAUCET_LINK')}/get-withdrawals/{reference}"
     try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            return resp.json()
-        else:
-            logger.error("Failed to get withdrawal status: %d - %s", resp.status_code, resp.text)
-            return None
-    except requests.exceptions.RequestException as e:
-        logger.error("Error checking withdrawal status: %s", e)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:   
+                if resp.status_code == 200:
+                    result = resp.json
+                    tx_hash = result.get("transaction_hash")
+                    return f"https://explorer.snap-coin.net/tx/{tx_hash}"
+    
+    except Exception as e: #pylint: disable=broad-except
+        logger.error("Failed to get transaction ID: %s", e)
         return None
+    
+async def reset_balance(user_ids: list):
+    db = os.getenv("REWARDS_DB", "rewards.db")
+    conn = None
+    try:
+        conn = sqlite3.connect(db)
+        cursor = conn.cursor()
+
+        cursor.executemany('''
+            UPDATE rewards
+            SET reward_amount = 0
+            WHERE user_id = ?
+        ''', [(uid,) for uid in user_ids])
+
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()

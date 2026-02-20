@@ -42,7 +42,11 @@ class Reward(commands.Cog):
                 
     @app_commands.command(name="add_wallet", description="add your snap wallet address to receive rewards")
     async def add_wallet(self, interaction: discord.Interaction, wallet_address: str):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
+        
+        if not wallet_address.isalnum() or len(wallet_address) !=50:
+            await interaction.followup.send("Invalid wallet address. Please provide a valid snap coin address.", ephemeral=True)
+            return
         
         db = os.getenv("REWARDS_DB", "rewards.db")
         conn = sqlite3.connect(db)
@@ -55,7 +59,7 @@ class Reward(commands.Cog):
         conn.commit()
         conn.close()
         
-        await interaction.followup.send(f"{interaction.user.display_name}, your wallet address {wallet_address} has been added.")
+        await interaction.followup.send(f"{interaction.user.display_name}, your wallet address {wallet_address} has been added.", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(Reward(bot))

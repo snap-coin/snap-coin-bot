@@ -25,7 +25,7 @@ bot = commands.Bot(command_prefix=None, intents=discord.Intents.all())
 
 
 async def set_hookup():
-    asyncio.create_task(request_payout())
+    asyncio.create_task(request_payout(bot))
     
 @bot.event
 async def setup_hook():
@@ -34,7 +34,7 @@ async def setup_hook():
     # start the lottery background task
     bot.loop.create_task(lottery_task(bot))
     # start the background payout task
-    bot.loop.create_task(request_payout())
+    bot.loop.create_task(request_payout(bot))
     logger.info("Extensions loaded and lottery task scheduled")
 
 @bot.event
